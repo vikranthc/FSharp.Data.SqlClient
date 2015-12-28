@@ -1,5 +1,5 @@
 (*** hide ***)
-#r @"..\..\src\SqlClient\bin\Debug\FSharp.Data.SqlClient.dll"
+#r @"..\..\bin\FSharp.Data.SqlClient.dll"
 #r "System.Transactions"
 open FSharp.Data
 
@@ -83,7 +83,7 @@ To work around this limitation, you can declare another variable in your script:
 let echoOk = new SqlCommandProvider< @"
 declare @theName nvarchar(max)
 set @theName = @name
-select 'hello' + @theName, 'your name is :' @theName", connectionString, SingleRow = true>()
+select 'hello' + @theName, 'your name is :' + @theName", connectionString, ResultType.Tuples, SingleRow = true>()
 
 
 (**
@@ -115,3 +115,14 @@ let xs =
     let cmd = new System.Data.SqlClient.SqlCommand(getDatesQuery, conn)
     cmd.ExecuteReader().ToRecords<GetDates.Record>() 
     |> Seq.toArray
+
+(**
+### 7. Why do I sometimes get ExecuteSingle and AsyncExecuteSingle options with the SqlProgrammabilityProvider?
+
+There are two cases when you would get those extra methods.
+
+* Referencing a stored procedure that returns some sort of result set you will get these extra methods.  
+* Referencing a Table Valued Function 
+
+In both cases the methods return `Option<'T>` (or `Async<Option<'T>>`) rather than `Seq<'T>` (or `Async<Seq<'T>>`)
+*)

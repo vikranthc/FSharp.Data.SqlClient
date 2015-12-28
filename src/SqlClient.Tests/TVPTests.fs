@@ -84,3 +84,16 @@ Error	1	The type provider 'FSharp.Data.SqlCommandProvider' reported an error in 
 The error: Value cannot be null.	C:\Users\mitekm\Documents\GitHub\FSharp.Data.SqlClient\src\SqlClient.Tests\TVPTests.fs	83	5	SqlClient.Tests
 *)
    
+
+type MyFunc = SqlCommandProvider<"select * from dbo.MyFunc(@x, @y)", ConnectionStrings.AdventureWorksNamed>
+
+[<Fact>]
+let TwoTVPParameterOfSameUDTT() = 
+    let cmd = new MyFunc()
+    let xs = [ 1, Some "monkey" ]
+    let ys = [ 2, Some "donkey" ]
+    let xs' = [ for id, name in xs -> MyFunc.MyTableType(id, name) ]
+    let ys' = [ for id, name in ys -> MyFunc.MyTableType(id, name) ]
+    let expected = [ for id, name in xs @ ys -> MyFunc.Record(id, name) ]
+    Assert.Equal<_ list>(expected, cmd.Execute(xs', ys') |> Seq.toList)    
+

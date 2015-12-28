@@ -13,6 +13,11 @@ let asyncSinlgeColumn() =
     Assert.Equal<int[]>([| 2; 4; 8; 24 |], cmd.AsyncExecute() |> Async.RunSynchronously |> Seq.toArray)    
 
 [<Fact>]
+let emptyResultset() = 
+    use cmd = new SqlCommandProvider<"SELECT 42 WHERE 0 > 1", ConnectionStrings.AdventureWorksNamed>()
+    Assert.Equal<_ []>( Array.empty, cmd.Execute() |> Seq.toArray)    
+
+[<Fact>]
 let ConnectionClose() = 
     use cmd = new GetEvenNumbers()
     let untypedCmd : ISqlCommand = upcast cmd
@@ -101,7 +106,7 @@ let ``ToTraceString for CRUD``() =
     )
     
     Assert.Equal<string>(
-        expected = "exec sp_executesql N'INSERT INTO Sales.Currency VALUES(@Code, @Name, GETDATE())',N'@Code NChar(3),@Name NVarChar(7)',@Code='BTC',@Name='Bitcoin'",
+        expected = "exec sp_executesql N'INSERT INTO Sales.Currency VALUES(@Code, @Name, GETDATE())',N'@Code NChar(3),@Name NVarChar(50)',@Code='BTC',@Name='Bitcoin'",
         actual = let cmd = new InsertBitCoin() in cmd.ToTraceString( bitCoinCode, bitCoinName)
     )
 
@@ -121,7 +126,7 @@ let ``ToTraceString double-quotes``() =
     )>]
 let CommandTimeout() =
     use cmd = 
-        new SqlCommandProvider<"WAITFOR DELAY '00:00:35'; SELECT 42", ConnectionStrings.AdventureWorksNamed, SingleRow = true>(commandTimeout = 60)
+        new SqlCommandProvider<"WAITFOR DELAY '00:00:06'; SELECT 42", ConnectionStrings.AdventureWorksNamed, SingleRow = true>(commandTimeout = 60)
     Assert.Equal(60, cmd.CommandTimeout)
     Assert.Equal(Some 42, cmd.Execute())     
 
@@ -173,3 +178,174 @@ let ``Setting the command timeout isn't overridden when giving ConnectionStrings
     let sqlCommand = (getDate :> ISqlCommand).Raw
     Assert.Equal(customTimeout, sqlCommand.CommandTimeout)
 
+[<Fact(Skip = "Thread safe execution is not supported yet")>]
+let ConcurrentReaders() =
+    let cmd = new GetEvenNumbers(ConnectionStrings.AdventureWorksLiteralMultipleActiveResults)
+    let expected  = [| 2, 2; 4,4; 8,8; 24, 24 |]
+    let actual = (cmd.Execute(), cmd.Execute()) ||> Seq.zip |> Seq.toArray
+    Assert.Equal<_[]>(expected, actual)
+
+[<Fact>]
+let ResultsetExtendedWithTrailingColumn() =
+    let cmd = new SqlCommandProvider<"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+                ,GETDATE() AS Now
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    ", ConnectionStrings.AdventureWorksNamed>()
+
+    Assert.Equal<_ list>([0..9], [ for x in cmd.Execute() -> x.Value ])
+    
+    (cmd :> ISqlCommand).Raw.CommandText <-"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+                ,GETDATE() AS Now
+	            ,SUM(Value) OVER (ORDER BY Value) AS Total
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    "
+    Assert.Equal<_ list>([0..9], [ for x in cmd.Execute() -> x.Value ])
+
+let resultsetRuntimeVerificationEnabled = 
+    lazy 
+        match Configuration.ConfigurationManager.GetSection("FSharp.Data.SqlClient") with
+        | :? System.Collections.Specialized.NameValueCollection as xs ->
+            string xs.["ResultsetRuntimeVerification"] = "true"
+        | _ -> false
+
+[<Fact>]
+let ResultsetRuntimeVerificationLessThanExpectedColumns() =
+    let cmd = new SqlCommandProvider<"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+                ,GETDATE() AS Now
+	            ,SUM(Value) OVER (ORDER BY Value) AS Total
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    ", ConnectionStrings.AdventureWorksNamed>()
+
+    Assert.Equal<_ list>([0..9], [ for x in cmd.Execute() -> x.Value ])
+    
+    (cmd :> ISqlCommand).Raw.CommandText <-"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+                ,GETDATE() AS Now
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    "
+    if resultsetRuntimeVerificationEnabled.Value
+    then 
+        let err = Assert.Throws<InvalidOperationException>(fun() -> cmd.Execute() |> Seq.toArray |> ignore)    
+        Assert.Equal<string>(
+            "Expected at least 3 columns in result set but received only 2.",
+            err.Message
+        )
+    else
+        let err = Assert.Throws<IndexOutOfRangeException>(fun() -> cmd.Execute() |> Seq.toArray |> ignore)    
+        Assert.Equal<string>(
+            "Index was outside the bounds of the array.",
+            err.Message
+        )
+
+[<Fact>]
+let ResultsetRuntimeVerificationDiffColumnTypes() =
+    let cmd = new SqlCommandProvider<"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+	            ,SUM(Value) OVER (ORDER BY Value) AS Total
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    ", ConnectionStrings.AdventureWorksNamed>()
+
+    Assert.Equal<_ list>([0..9], [ for x in cmd.Execute() -> x.Value ])
+    
+    (cmd :> ISqlCommand).Raw.CommandText <-"
+        WITH XS AS
+        (
+	        SELECT 
+                Value
+                ,GETDATE() AS Now
+	        FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) as T(Value)
+        )
+        SELECT * FROM XS
+    "
+
+    if resultsetRuntimeVerificationEnabled.Value
+    then 
+        let err = Assert.Throws<InvalidOperationException>(fun() -> cmd.Execute() |> Seq.toArray |> ignore)    
+        Assert.Equal<string>(
+            """Expected column [Total] of type "System.Int32" at position 1 (0-based indexing) but received column [Now] of type "System.DateTime".""",
+            err.Message
+        )
+    else
+        let err = Assert.Throws<InvalidCastException>(fun() -> cmd.Execute() |> Seq.toArray |> ignore)    
+        Assert.Equal<string>(
+            "Specified cast is not valid.",
+            err.Message
+        )
+
+module ``The undeclared parameter 'X' is used more than once in the batch being analyzed`` = 
+    [<Fact>]
+    let Basic() =
+        use cmd = new SqlCommandProvider<"
+            SELECT * 
+            FROM HumanResources.Shift 
+            WHERE 
+                @time >= StartTime 
+                AND @time <= EndTime
+        ", ConnectionStrings.AdventureWorksNamed>()
+        let actual = [ for x in cmd.Execute( TimeSpan(16, 0, 0)) -> x.Name ]
+        Assert.Equal<_ list>([ "Evening" ], actual )
+
+    [<Fact>]
+    let WithBoundDeclaration() =
+        use cmd = new SqlCommandProvider<"
+            DECLARE @x AS INT = 42; --make bound vars handled properly
+
+            SELECT * 
+            FROM HumanResources.Shift 
+            WHERE 
+                @time >= StartTime 
+                AND @time <= EndTime
+        ", ConnectionStrings.AdventureWorksNamed>()
+        let actual = [ for x in cmd.Execute( TimeSpan(16, 0, 0)) -> x.Name ]
+        Assert.Equal<_ list>([ "Evening" ], actual )
+
+    [<Fact>]
+    let WithUnboundDeclaration() =
+        use cmd = new SqlCommandProvider<"
+            DECLARE @x AS INT; --make bound vars handled properly
+            SELECT * 
+            FROM HumanResources.Shift 
+            WHERE 
+                @time >= StartTime 
+                AND @time <= EndTime
+        ", ConnectionStrings.AdventureWorksNamed>()
+        let actual = [ for x in cmd.Execute( TimeSpan(16, 0, 0)) -> x.Name ]
+        Assert.Equal<_ list>([ "Evening" ], actual )
+
+    [<Fact>]
+    let DynamicFiltering() =
+        use cmd = new SqlCommandProvider<"
+            SELECT * 
+            FROM HumanResources.Shift 
+            WHERE CAST(@time AS TIME) IS NULL OR @time BETWEEN StartTime AND EndTime
+        ", ConnectionStrings.AdventureWorksNamed>()
+        let actual = [ for x in cmd.Execute( TimeSpan(16, 0, 0)) -> x.Name ]
+        Assert.Equal<_ list>([ "Evening" ], actual )

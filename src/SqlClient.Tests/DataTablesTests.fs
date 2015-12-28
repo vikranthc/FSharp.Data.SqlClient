@@ -8,7 +8,7 @@ open System.Data
 open FSharp.Data
 open Xunit
 
-type AdventureWorks = SqlProgrammabilityProvider<ConnectionStrings.AdventureWorksNamed>
+open ProgrammabilityTest
 
 //Tables types structured as: [TypeAlias].[Namespace].Tables.[TableName]
 type ShiftTable = AdventureWorks.HumanResources.Tables.Shift
@@ -268,4 +268,4 @@ type DataTablesTests() =
         use tran = new TransactionScope()
         let t = new AdventureWorks.dbo.Tables.TableHavingColumnNamesWithSpaces()
         t.AddRow()
-        t.Update()
+        Assert.Equal(1, t.Update())

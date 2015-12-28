@@ -25,7 +25,7 @@ let ScalarValuedFunction() =
 
 [<Fact>]
 let ConnectionObject() =
-    let conn = new SqlConnection(ConnectionStrings.AdventureWorks)
+    let _ = new SqlConnection(ConnectionStrings.AdventureWorks)
     let cmd = new AdventureWorks.dbo.ufnLeadingZeros()
     let x = 42
     Assert.Equal( Some(sprintf "%08i" x), cmd.Execute(x))
@@ -68,7 +68,7 @@ let localTransactionCtor() =
     do
         //let get
         use updatedJobTitle = new AdventureWorks.HumanResources.uspUpdateEmployeeHireInfo(conn, tran)
-        let recordsAffrected = 
+        let _ = 
             updatedJobTitle.Execute(
                 businessEntityID, 
                 newJobTitle, 
@@ -78,8 +78,8 @@ let localTransactionCtor() =
                 PayFrequency = 1uy, 
                 CurrentFlag = true 
             )
-        System.Diagnostics.Debug.WriteLine(recordsAffrected)
         //Assert.Equal(1, recordsAffrected)
+        ()
     
     let updatedJobTitle = 
         use cmd = new AdventureWorks.dbo.ufnGetContactInformation(conn, tran)
@@ -113,8 +113,8 @@ let localTransactionCreateAndSingleton() =
     let newJobTitle = "Uber " + jobTitle
     do
         //let get
-        use updatedJobTitle = AdventureWorks.HumanResources.uspUpdateEmployeeHireInfo.Create(conn, tran)
-        let recordsAffrected = 
+        use updatedJobTitle = new AdventureWorks.HumanResources.uspUpdateEmployeeHireInfo(conn, tran)
+        let _ = 
             updatedJobTitle.Execute(
                 businessEntityID, 
                 newJobTitle, 
@@ -124,11 +124,11 @@ let localTransactionCreateAndSingleton() =
                 PayFrequency = 1uy, 
                 CurrentFlag = true 
             )
-        System.Diagnostics.Debug.WriteLine(recordsAffrected)
         //Assert.Equal(1, recordsAffrected)
+        ()
     
     let updatedJobTitle = 
-        use cmd = AdventureWorks.dbo.ufnGetContactInformation.Create(conn, tran)
+        use cmd = new AdventureWorks.dbo.ufnGetContactInformation(conn, tran)
         let result = cmd.ExecuteSingle(PersonID = jamesKramerId) 
         result.Value.JobTitle.Value
 
@@ -136,37 +136,24 @@ let localTransactionCreateAndSingleton() =
 
 [<Fact>]
 let FunctionWithParamOfValueTypeWithNullDefault() = 
-    Assert.Equal(
-        AdventureWorks.dbo.ufnGetStock.Create().Execute(1),
-        AdventureWorks.dbo.ufnGetStock2.Create().Execute(Some 1)
-    )
-    Assert.Equal(
-        Some 83173,
-        AdventureWorks.dbo.ufnGetStock2.Create().Execute()
-    )
+    use cmd1 = new AdventureWorks.dbo.ufnGetStock()
+    use cmd2 = new AdventureWorks.dbo.ufnGetStock2()
+    Assert.Equal(cmd1.Execute(1), cmd2.Execute(Some 1))
+
+    Assert.Equal(Some 83173, cmd2.Execute())
 
 [<Fact>]
 let SpWithParamOfRefTypeWithNullDefault() = 
-    Assert.Equal(
-        Some (Some (box "Empty")),
-        AdventureWorks.dbo.Echo.Create().ExecuteSingle()
-    )
+    use echo = new AdventureWorks.dbo.Echo()
+    Assert.Equal( Some (Some (box "Empty")), echo.ExecuteSingle())
 
-    Assert.Equal(
-        Some(Some (box 42)),
-        AdventureWorks.dbo.Echo.Create().ExecuteSingle 42
-    )
+    Assert.Equal( Some(Some (box 42)), echo.ExecuteSingle 42)
 
-    Assert.Equal<string seq>(
-        [| "<NULL>" |],
-        AdventureWorks.dbo.EchoText.Create().Execute() |> Seq.toArray
-    )
+    use echoText = new AdventureWorks.dbo.EchoText()
+    Assert.Equal<string[]>([| "<NULL>" |], echoText.Execute() |> Seq.toArray)
 
     let param = "Hello, world!"
-    Assert.Equal<string seq>(
-        [| param |],
-        AdventureWorks.dbo.EchoText.Create().Execute param |> Seq.toArray
-    )
+    Assert.Equal<string[]>([| param |], echoText.Execute( param) |> Seq.toArray)
 
 type DboMyTableType = AdventureWorks.dbo.``User-Defined Table Types``.MyTableType 
 
@@ -177,7 +164,6 @@ let SpWithParamOfTvpWithNullableColumns() =
         DboMyTableType(myId = 1)
         DboMyTableType(myId = 2, myName = Some "donkey")
     ]
-    let actual = [| for x in cmd.Execute( p) -> x.myId, x.myName |]
     Assert.Equal<_ []>(
         [| 1, None; 2, Some "donkey" |],
         [| for x in cmd.Execute( p) -> x.myId, x.myName |]
@@ -192,7 +178,6 @@ let SpWithParamOfTvpWithNullableColumns2() =
         PersonMyTableType(myId = 1)
         PersonMyTableType(myId = 2, myName = Some "donkey")
     ]
-    let actual = [| for x in cmd.Execute( p) -> x.myId, x.myName |]
     Assert.Equal<_ []>(
         [| 1, None; 2, Some "donkey" |],
         [| for x in cmd.Execute( p) -> x.myId, x.myName |]
@@ -205,8 +190,75 @@ let SpAndTVPinDiffSchema() =
         DboMyTableType(myId = 1)
         DboMyTableType(myId = 2, myName = Some "donkey")
     ]
-    let actual = [| for x in cmd.Execute( p) -> x.myId, x.myName |]
     Assert.Equal<_ []>(
         [| 1, None; 2, Some "donkey" |],
         [| for x in cmd.Execute( p) -> x.myId, x.myName |]
     )
+
+[<Fact>]
+let OutParam() = 
+    let cmd = new AdventureWorks.dbo.AddRef()
+    let x, y = 12, -1
+    let sum = ref Int32.MinValue
+    cmd.Execute(x, y, sum) |> ignore
+    Assert.Equal(x + y, !sum)
+    //tupled syntax
+    let _, sum2 = cmd.Execute(x, y)
+    Assert.Equal(x + y, sum2)
+
+[<Fact>]
+let ResultSetAndOutParam() = 
+    let cmd = new AdventureWorks.dbo.HowManyRows()
+    let p = [
+        DboMyTableType(myId = 1)
+        DboMyTableType(myId = 2, myName = Some "donkey")
+    ]
+    let total = ref 0L
+    let result = cmd.Execute(p, total) 
+    Assert.Equal<_ list>([ Some "donkey" ], [ for x in result -> x.myName ] )
+    Assert.Equal(2L, !total)
+
+module ReturnValues = 
+    type AdventureWorks = SqlProgrammabilityProvider<ConnectionStrings.AdventureWorksNamed, UseReturnValue = true>
+
+    [<Fact>]
+    let AddRef() = 
+        let cmd = new AdventureWorks.dbo.AddRef()
+        let x, y = 12, -1
+        let sum = ref Int32.MinValue
+        let returnValue = ref Int32.MaxValue
+        let rowsAffected = cmd.Execute(x, y, sum, returnValue) 
+        Assert.Equal(-1, rowsAffected) 
+        Assert.Equal(x + y, !sum)
+        Assert.Equal(!sum, !returnValue)
+        //tupled syntax
+        let rowAffected2, sum2, returnValue2 = cmd.Execute(x, y)
+        Assert.Equal(x + y, sum2)
+        Assert.Equal(sum2, returnValue2)
+        Assert.Equal(-1, rowAffected2) 
+
+    type DboMyTableType = AdventureWorks.dbo.``User-Defined Table Types``.MyTableType 
+
+    [<Fact>]
+    let ResultSetAndOutParam() = 
+        let cmd = new AdventureWorks.dbo.HowManyRows()
+        let p = [
+            DboMyTableType(myId = 1)
+            DboMyTableType(myId = 2, myName = Some "donkey")
+        ]
+
+        do //explicit refs
+            let total = ref Int64.MinValue
+            let returnValue = ref Int32.MaxValue
+            let result = cmd.Execute(p, total, returnValue) 
+            Assert.Equal<_ list>( [ 2, Some "donkey" ], [ for x in result -> x.myId, x.myName ] )
+            Assert.Equal(2L, !total)
+            Assert.Equal(0, !returnValue) //default return value
+
+        do //tupled response syntax
+            let result, total, returnValue = cmd.Execute(p) 
+            Assert.Equal<_ list>( [ 2, Some "donkey" ], [ for x in result -> x.myId, x.myName ] )
+            Assert.Equal(2L, total)
+            Assert.Equal(0, returnValue) //default return value
+
+
